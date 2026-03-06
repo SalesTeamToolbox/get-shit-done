@@ -5,7 +5,19 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
-const { loadConfig, resolveModelInternal, findPhaseInternal, getRoadmapPhaseInternal, pathExistsInternal, generateSlugInternal, getMilestoneInfo, normalizePhaseName, toPosixPath, output, error, buildPaths } = require('./core.cjs');
+const { loadConfig, resolveModelInternal, findPhaseInternal, getRoadmapPhaseInternal, pathExistsInternal, generateSlugInternal, getMilestoneInfo, normalizePhaseName, toPosixPath, output, error, buildPaths, getActiveWorkstream } = require('./core.cjs');
+
+/**
+ * Extract the active workstream name from paths or auto-detect.
+ * Returns null in flat mode.
+ */
+function resolveWorkstreamName(cwd, p) {
+  // Check if wsDirRel is under workstreams/ — if so, extract name
+  const match = p.wsDirRel.match(/\.planning[/\\]workstreams[/\\]([^/\\]+)/);
+  if (match) return match[1];
+  // Fallback to active-workstream file
+  return getActiveWorkstream(cwd);
+}
 
 function cmdInitExecutePhase(cwd, phase, raw, paths) {
   if (!phase) {
@@ -72,10 +84,15 @@ function cmdInitExecutePhase(cwd, phase, raw, paths) {
     state_exists: fs.existsSync(p.state),
     roadmap_exists: fs.existsSync(p.roadmap),
     config_exists: fs.existsSync(p.config),
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     state_path: p.stateRel,
     roadmap_path: p.roadmapRel,
+    requirements_path: p.requirementsRel,
     config_path: p.configRel,
+    phases_path: p.phasesRel,
   };
 
   output(result, raw);
@@ -128,10 +145,14 @@ function cmdInitPlanPhase(cwd, phase, raw, paths) {
     planning_exists: fs.existsSync(p.baseDir),
     roadmap_exists: fs.existsSync(p.roadmap),
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     state_path: p.stateRel,
     roadmap_path: p.roadmapRel,
     requirements_path: p.requirementsRel,
+    phases_path: p.phasesRel,
   };
 
   if (phaseInfo?.directory) {
@@ -214,8 +235,16 @@ function cmdInitNewProject(cwd, raw, paths) {
     // Enhanced search
     brave_search_available: hasBraveSearch,
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     project_path: p.projectRel,
+    config_path: p.configRel,
+    state_path: p.stateRel,
+    roadmap_path: p.roadmapRel,
+    requirements_path: p.requirementsRel,
+    phases_path: p.phasesRel,
   };
 
   output(result, raw);
@@ -245,10 +274,15 @@ function cmdInitNewMilestone(cwd, raw, paths) {
     roadmap_exists: fs.existsSync(p.roadmap),
     state_exists: fs.existsSync(p.state),
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     project_path: p.projectRel,
     roadmap_path: p.roadmapRel,
     state_path: p.stateRel,
+    requirements_path: p.requirementsRel,
+    phases_path: p.phasesRel,
   };
 
   output(result, raw);
@@ -297,6 +331,10 @@ function cmdInitQuick(cwd, description, raw, paths) {
     // Paths
     quick_dir: quickDirRel,
     task_dir: slug ? `${quickDirRel}/${nextNum}-${slug}` : null,
+    state_path: p.stateRel,
+
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
 
     // File existence
     roadmap_exists: fs.existsSync(p.roadmap),
@@ -333,6 +371,9 @@ function cmdInitResume(cwd, raw, paths) {
     has_interrupted_agent: !!interruptedAgentId,
     interrupted_agent_id: interruptedAgentId,
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // Config
     commit_docs: config.commit_docs,
   };
@@ -365,6 +406,12 @@ function cmdInitVerifyWork(cwd, phase, raw, paths) {
 
     // Existing artifacts
     has_verification: phaseInfo?.has_verification || false,
+
+    // File paths
+    state_path: p.stateRel,
+
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
   };
 
   output(result, raw);
@@ -420,10 +467,14 @@ function cmdInitPhaseOp(cwd, phase, raw, paths) {
     roadmap_exists: fs.existsSync(p.roadmap),
     planning_exists: fs.existsSync(p.baseDir),
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     state_path: p.stateRel,
     roadmap_path: p.roadmapRel,
     requirements_path: p.requirementsRel,
+    phases_path: p.phasesRel,
   };
 
   if (phaseInfo?.directory) {
@@ -503,6 +554,9 @@ function cmdInitTodos(cwd, area, raw, paths) {
     pending_dir: toPosixPath(path.relative(cwd, path.join(p.todos, 'pending'))),
     completed_dir: toPosixPath(path.relative(cwd, path.join(p.todos, 'completed'))),
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File existence
     planning_exists: fs.existsSync(p.baseDir),
     todos_dir_exists: fs.existsSync(p.todos),
@@ -563,6 +617,9 @@ function cmdInitMilestoneOp(cwd, raw, paths) {
     archived_milestones: archivedMilestones,
     archive_count: archivedMilestones.length,
 
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File existence
     project_exists: fs.existsSync(p.project),
     roadmap_exists: fs.existsSync(p.roadmap),
@@ -600,6 +657,9 @@ function cmdInitMapCodebase(cwd, raw, paths) {
     // Existing maps
     existing_maps: existingMaps,
     has_maps: existingMaps.length > 0,
+
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
 
     // File existence
     planning_exists: fs.existsSync(p.baseDir),
@@ -698,11 +758,15 @@ function cmdInitProgress(cwd, raw, paths) {
     project_exists: fs.existsSync(p.project),
     roadmap_exists: fs.existsSync(p.roadmap),
     state_exists: fs.existsSync(p.state),
+    // Workstream context
+    workstream: resolveWorkstreamName(cwd, p),
+
     // File paths
     state_path: p.stateRel,
     roadmap_path: p.roadmapRel,
     project_path: p.projectRel,
     config_path: p.configRel,
+    phases_path: p.phasesRel,
   };
 
   output(result, raw);

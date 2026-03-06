@@ -4,7 +4,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { safeReadFile, normalizePhaseName, execGit, findPhaseInternal, getMilestoneInfo, output, error } = require('./core.cjs');
+const { safeReadFile, normalizePhaseName, execGit, findPhaseInternal, getMilestoneInfo, output, error, buildPaths } = require('./core.cjs');
 const { extractFrontmatter, parseMustHavesBlock } = require('./frontmatter.cjs');
 const { writeStateMd } = require('./state.cjs');
 
@@ -394,9 +394,10 @@ function cmdVerifyKeyLinks(cwd, planFilePath, raw) {
   }, raw, verified === results.length ? 'valid' : 'invalid');
 }
 
-function cmdValidateConsistency(cwd, raw) {
-  const roadmapPath = path.join(cwd, '.planning', 'ROADMAP.md');
-  const phasesDir = path.join(cwd, '.planning', 'phases');
+function cmdValidateConsistency(cwd, raw, paths) {
+  const p = paths || buildPaths(cwd);
+  const roadmapPath = p.roadmap;
+  const phasesDir = p.phases;
   const errors = [];
   const warnings = [];
 
@@ -514,13 +515,14 @@ function cmdValidateConsistency(cwd, raw) {
   output({ passed, errors, warnings, warning_count: warnings.length }, raw, passed ? 'passed' : 'failed');
 }
 
-function cmdValidateHealth(cwd, options, raw) {
-  const planningDir = path.join(cwd, '.planning');
-  const projectPath = path.join(planningDir, 'PROJECT.md');
-  const roadmapPath = path.join(planningDir, 'ROADMAP.md');
-  const statePath = path.join(planningDir, 'STATE.md');
-  const configPath = path.join(planningDir, 'config.json');
-  const phasesDir = path.join(planningDir, 'phases');
+function cmdValidateHealth(cwd, options, raw, paths) {
+  const p = paths || buildPaths(cwd);
+  const planningDir = p.baseDir;
+  const projectPath = p.project;
+  const roadmapPath = p.roadmap;
+  const statePath = p.state;
+  const configPath = p.config;
+  const phasesDir = p.phases;
 
   const errors = [];
   const warnings = [];
@@ -617,18 +619,6 @@ function cmdValidateHealth(cwd, options, raw) {
     }
   }
 
-  // ─── Check 5b: Nyquist validation key presence ──────────────────────────
-  if (fs.existsSync(configPath)) {
-    try {
-      const configRaw = fs.readFileSync(configPath, 'utf-8');
-      const configParsed = JSON.parse(configRaw);
-      if (configParsed.workflow && configParsed.workflow.nyquist_validation === undefined) {
-        addIssue('warning', 'W008', 'config.json: workflow.nyquist_validation absent (defaults to enabled but agents may skip)', 'Run /gsd:health --repair to add key', true);
-        if (!repairs.includes('addNyquistKey')) repairs.push('addNyquistKey');
-      }
-    } catch {}
-  }
-
   // ─── Check 6: Phase directory naming (NN-name format) ─────────────────────
   try {
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
@@ -653,24 +643,6 @@ function cmdValidateHealth(cwd, options, raw) {
         const planBase = plan.replace('-PLAN.md', '').replace('PLAN.md', '');
         if (!summaryBases.has(planBase)) {
           addIssue('info', 'I001', `${e.name}/${plan} has no SUMMARY.md`, 'May be in progress');
-        }
-      }
-    }
-  } catch {}
-
-  // ─── Check 7b: Nyquist VALIDATION.md consistency ────────────────────────
-  try {
-    const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
-    for (const e of phaseEntries) {
-      if (!e.isDirectory()) continue;
-      const phaseFiles = fs.readdirSync(path.join(phasesDir, e.name));
-      const hasResearch = phaseFiles.some(f => f.endsWith('-RESEARCH.md'));
-      const hasValidation = phaseFiles.some(f => f.endsWith('-VALIDATION.md'));
-      if (hasResearch && !hasValidation) {
-        const researchFile = phaseFiles.find(f => f.endsWith('-RESEARCH.md'));
-        const researchContent = fs.readFileSync(path.join(phasesDir, e.name, researchFile), 'utf-8');
-        if (researchContent.includes('## Validation Architecture')) {
-          addIssue('warning', 'W009', `Phase ${e.name}: has Validation Architecture in RESEARCH.md but no VALIDATION.md`, 'Re-run /gsd:plan-phase with --research to regenerate');
         }
       }
     }
@@ -715,6 +687,37 @@ function cmdValidateHealth(cwd, options, raw) {
     }
   }
 
+  // ─── Check 5b: Nyquist validation key presence (W008) ───────────────────
+  if (fs.existsSync(configPath)) {
+    try {
+      const raw = fs.readFileSync(configPath, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.workflow && !('nyquist_validation' in parsed.workflow)) {
+        addIssue('warning', 'W008', 'config.json workflow section missing nyquist_validation key', 'Run /gsd:health --repair to add', true);
+        repairs.push('addNyquistKey');
+      }
+    } catch {}
+  }
+
+  // ─── Check 7b: Nyquist VALIDATION.md consistency (W009) ─────────────────
+  try {
+    const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const phaseFiles = fs.readdirSync(path.join(phasesDir, e.name));
+      const researchFiles = phaseFiles.filter(f => f.endsWith('-RESEARCH.md') || f === 'RESEARCH.md');
+      for (const rf of researchFiles) {
+        const content = fs.readFileSync(path.join(phasesDir, e.name, rf), 'utf-8');
+        if (content.includes('Validation Architecture')) {
+          const hasValidation = phaseFiles.some(f => f.endsWith('-VALIDATION.md') || f === 'VALIDATION.md');
+          if (!hasValidation) {
+            addIssue('warning', 'W009', `${e.name}/${rf} has Validation Architecture section but no VALIDATION.md`, 'Create VALIDATION.md for this phase');
+          }
+        }
+      }
+    }
+  } catch {}
+
   // ─── Perform repairs if requested ─────────────────────────────────────────
   const repairActions = [];
   if (options.repair && repairs.length > 0) {
@@ -746,7 +749,7 @@ function cmdValidateHealth(cwd, options, raw) {
               repairActions.push({ action: 'backupState', success: true, path: backupPath });
             }
             // Generate minimal STATE.md from ROADMAP.md structure
-            const milestone = getMilestoneInfo(cwd);
+            const milestone = getMilestoneInfo(cwd, p);
             let stateContent = `# Session State\n\n`;
             stateContent += `## Project Reference\n\n`;
             stateContent += `See: .planning/PROJECT.md\n\n`;
@@ -761,20 +764,12 @@ function cmdValidateHealth(cwd, options, raw) {
             break;
           }
           case 'addNyquistKey': {
-            if (fs.existsSync(configPath)) {
-              try {
-                const configRaw = fs.readFileSync(configPath, 'utf-8');
-                const configParsed = JSON.parse(configRaw);
-                if (!configParsed.workflow) configParsed.workflow = {};
-                if (configParsed.workflow.nyquist_validation === undefined) {
-                  configParsed.workflow.nyquist_validation = true;
-                  fs.writeFileSync(configPath, JSON.stringify(configParsed, null, 2), 'utf-8');
-                }
-                repairActions.push({ action: repair, success: true, path: 'config.json' });
-              } catch (err) {
-                repairActions.push({ action: repair, success: false, error: err.message });
-              }
-            }
+            const raw = fs.readFileSync(configPath, 'utf-8');
+            const parsed = JSON.parse(raw);
+            if (!parsed.workflow) parsed.workflow = {};
+            parsed.workflow.nyquist_validation = true;
+            fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8');
+            repairActions.push({ action: repair, success: true, path: 'config.json' });
             break;
           }
         }

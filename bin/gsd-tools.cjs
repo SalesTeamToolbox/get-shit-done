@@ -179,7 +179,7 @@ async function main() {
   }
 
   // Optional workstream override for multi-workstream support
-  // Priority: explicit --ws flag > .planning/active-workstream file > null (flat mode)
+  // Priority: explicit --ws flag > GSD_WORKSTREAM env var > active-workstream file > null (flat mode)
   let ws = null;
   const wsEqArg = args.find(arg => arg.startsWith('--ws='));
   const wsIdx = args.indexOf('--ws');
@@ -191,8 +191,11 @@ async function main() {
     ws = args[wsIdx + 1];
     if (!ws || ws.startsWith('--')) error('Missing value for --ws');
     args.splice(wsIdx, 2);
+  } else if (process.env.GSD_WORKSTREAM) {
+    // Per-instance env var (safe for concurrent Claude Code instances)
+    ws = process.env.GSD_WORKSTREAM.trim();
   } else {
-    // Auto-detect from active-workstream file
+    // Auto-detect from active-workstream file (shared — last-writer-wins)
     ws = core.getActiveWorkstream(cwd);
   }
 
