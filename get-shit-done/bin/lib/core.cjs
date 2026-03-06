@@ -4,13 +4,107 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ─── Path helpers ────────────────────────────────────────────────────────────
 
 /** Normalize a relative path to always use forward slashes (cross-platform). */
 function toPosixPath(p) {
   return p.split(path.sep).join('/');
+}
+
+/**
+ * Resolve the planning directory for a given workstream.
+ * In flat mode (no workstreams/ dir and no ws specified), returns `.planning/`.
+ * In workstream mode, returns `.planning/workstreams/{ws}/`.
+ */
+function resolvePlanningDir(cwd, workstream) {
+  const base = path.join(cwd, '.planning');
+  if (!workstream && !fs.existsSync(path.join(base, 'workstreams'))) {
+    return base;
+  }
+  if (!workstream) {
+    // Workstreams dir exists but no ws specified — stay in flat base
+    // Callers must pass an explicit ws name; we don't guess 'default'
+    return base;
+  }
+  return path.join(base, 'workstreams', workstream);
+}
+
+/**
+ * Build a full paths object for filesystem operations and relative output.
+ * All modules use this instead of hardcoded `.planning/` references.
+ */
+function buildPaths(cwd, workstream) {
+  const wsDir = resolvePlanningDir(cwd, workstream);
+  const baseDir = path.join(cwd, '.planning');
+  const relWsDir = path.relative(cwd, wsDir);
+
+  return {
+    // Per-workstream (scoped) — absolute
+    roadmap:      path.join(wsDir, 'ROADMAP.md'),
+    state:        path.join(wsDir, 'STATE.md'),
+    requirements: path.join(wsDir, 'REQUIREMENTS.md'),
+    phases:       path.join(wsDir, 'phases'),
+    wsResearch:   path.join(wsDir, 'research'),
+    wsConfig:     path.join(wsDir, 'config.json'),
+    wsDir,
+
+    // Per-workstream — relative (for JSON output)
+    roadmapRel:      toPosixPath(path.join(relWsDir, 'ROADMAP.md')),
+    stateRel:        toPosixPath(path.join(relWsDir, 'STATE.md')),
+    requirementsRel: toPosixPath(path.join(relWsDir, 'REQUIREMENTS.md')),
+    phasesRel:       toPosixPath(path.join(relWsDir, 'phases')),
+    wsDirRel:        toPosixPath(relWsDir),
+
+    // Shared (project-level, never scoped) — absolute
+    project:      path.join(baseDir, 'PROJECT.md'),
+    config:       path.join(baseDir, 'config.json'),
+    milestones:   path.join(baseDir, 'milestones'),
+    research:     path.join(baseDir, 'research'),
+    codebase:     path.join(baseDir, 'codebase'),
+    todos:        path.join(baseDir, 'todos'),
+    baseDir,
+
+    // Shared — relative
+    projectRel:   '.planning/PROJECT.md',
+    configRel:    '.planning/config.json',
+    milestonesRel:'.planning/milestones',
+    baseDirRel:   '.planning',
+  };
+}
+
+// ─── Active Workstream Detection ─────────────────────────────────────────────
+
+/**
+ * Get the active workstream name from .planning/active-workstream file.
+ * Returns null if no active workstream is set or file doesn't exist.
+ */
+function getActiveWorkstream(cwd) {
+  const filePath = path.join(cwd, '.planning', 'active-workstream');
+  try {
+    const name = fs.readFileSync(filePath, 'utf-8').trim();
+    if (!name) return null;
+    // Verify the workstream directory actually exists
+    const wsDir = path.join(cwd, '.planning', 'workstreams', name);
+    if (!fs.existsSync(wsDir)) return null;
+    return name;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Set the active workstream. Writes name to .planning/active-workstream.
+ * Pass null or empty string to clear the active workstream.
+ */
+function setActiveWorkstream(cwd, name) {
+  const filePath = path.join(cwd, '.planning', 'active-workstream');
+  if (!name) {
+    try { fs.unlinkSync(filePath); } catch {}
+    return;
+  }
+  fs.writeFileSync(filePath, name + '\n', 'utf-8');
 }
 
 // ─── Model Profile Table ─────────────────────────────────────────────────────
@@ -27,7 +121,6 @@ const MODEL_PROFILES = {
   'gsd-verifier':             { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
   'gsd-plan-checker':         { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
   'gsd-integration-checker':  { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
-  'gsd-nyquist-auditor':      { quality: 'sonnet', balanced: 'sonnet', budget: 'haiku' },
 };
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -65,8 +158,8 @@ function safeReadFile(filePath) {
   }
 }
 
-function loadConfig(cwd) {
-  const configPath = path.join(cwd, '.planning', 'config.json');
+function loadConfig(cwd, paths) {
+  const configPath = paths ? paths.config : path.join(cwd, '.planning', 'config.json');
   const defaults = {
     model_profile: 'balanced',
     commit_docs: true,
@@ -77,7 +170,7 @@ function loadConfig(cwd) {
     research: true,
     plan_checker: true,
     verifier: true,
-    nyquist_validation: true,
+    nyquist_validation: false,
     parallelization: true,
     brave_search: false,
   };
@@ -85,14 +178,6 @@ function loadConfig(cwd) {
   try {
     const raw = fs.readFileSync(configPath, 'utf-8');
     const parsed = JSON.parse(raw);
-
-    // Migrate deprecated "depth" key to "granularity" with value mapping
-    if ('depth' in parsed && !('granularity' in parsed)) {
-      const depthToGranularity = { quick: 'coarse', standard: 'standard', comprehensive: 'fine' };
-      parsed.granularity = depthToGranularity[parsed.depth] || parsed.depth;
-      delete parsed.depth;
-      try { fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2), 'utf-8'); } catch {}
-    }
 
     const get = (key, nested) => {
       if (parsed[key] !== undefined) return parsed[key];
@@ -133,11 +218,7 @@ function loadConfig(cwd) {
 
 function isGitIgnored(cwd, targetPath) {
   try {
-    // --no-index checks .gitignore rules regardless of whether the file is tracked.
-    // Without it, git check-ignore returns "not ignored" for tracked files even when
-    // .gitignore explicitly lists them — a common source of confusion when .planning/
-    // was committed before being added to .gitignore.
-    execSync('git check-ignore -q --no-index -- ' + targetPath.replace(/[^a-zA-Z0-9._\-/]/g, ''), {
+    execFileSync('git', ['check-ignore', '-q', '--', targetPath], {
       cwd,
       stdio: 'pipe',
     });
@@ -149,11 +230,7 @@ function isGitIgnored(cwd, targetPath) {
 
 function execGit(cwd, args) {
   try {
-    const escaped = args.map(a => {
-      if (/^[a-zA-Z0-9._\-/=:@]+$/.test(a)) return a;
-      return "'" + a.replace(/'/g, "'\\''") + "'";
-    });
-    const stdout = execSync('git ' + escaped.join(' '), {
+    const stdout = execFileSync('git', args, {
       cwd,
       stdio: 'pipe',
       encoding: 'utf-8',
@@ -256,18 +333,19 @@ function searchPhaseInDir(baseDir, relBase, normalized) {
   }
 }
 
-function findPhaseInternal(cwd, phase) {
+function findPhaseInternal(cwd, phase, paths) {
   if (!phase) return null;
 
-  const phasesDir = path.join(cwd, '.planning', 'phases');
+  const phasesDir = paths ? paths.phases : path.join(cwd, '.planning', 'phases');
   const normalized = normalizePhaseName(phase);
 
+  const relPhasesDir = paths ? paths.phasesRel : '.planning/phases';
   // Search current phases first
-  const current = searchPhaseInDir(phasesDir, '.planning/phases', normalized);
+  const current = searchPhaseInDir(phasesDir, relPhasesDir, normalized);
   if (current) return current;
 
   // Search archived milestone phases (newest first)
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+  const milestonesDir = paths ? paths.milestones : path.join(cwd, '.planning', 'milestones');
   if (!fs.existsSync(milestonesDir)) return null;
 
   try {
@@ -293,8 +371,8 @@ function findPhaseInternal(cwd, phase) {
   return null;
 }
 
-function getArchivedPhaseDirs(cwd) {
-  const milestonesDir = path.join(cwd, '.planning', 'milestones');
+function getArchivedPhaseDirs(cwd, paths) {
+  const milestonesDir = paths ? paths.milestones : path.join(cwd, '.planning', 'milestones');
   const results = [];
 
   if (!fs.existsSync(milestonesDir)) return results;
@@ -330,9 +408,9 @@ function getArchivedPhaseDirs(cwd) {
 
 // ─── Roadmap & model utilities ────────────────────────────────────────────────
 
-function getRoadmapPhaseInternal(cwd, phaseNum) {
+function getRoadmapPhaseInternal(cwd, phaseNum, paths) {
   if (!phaseNum) return null;
-  const roadmapPath = path.join(cwd, '.planning', 'ROADMAP.md');
+  const roadmapPath = paths ? paths.roadmap : path.join(cwd, '.planning', 'ROADMAP.md');
   if (!fs.existsSync(roadmapPath)) return null;
 
   try {
@@ -398,21 +476,10 @@ function generateSlugInternal(text) {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
-function getMilestoneInfo(cwd) {
+function getMilestoneInfo(cwd, paths) {
   try {
-    const roadmap = fs.readFileSync(path.join(cwd, '.planning', 'ROADMAP.md'), 'utf-8');
-
-    // First: check for list-format roadmaps using 🚧 (in-progress) marker
-    // e.g. "- 🚧 **v2.1 Belgium** — Phases 24-28 (in progress)"
-    const inProgressMatch = roadmap.match(/🚧\s*\*\*v(\d+\.\d+)\s+([^*]+)\*\*/);
-    if (inProgressMatch) {
-      return {
-        version: 'v' + inProgressMatch[1],
-        name: inProgressMatch[2].trim(),
-      };
-    }
-
-    // Second: heading-format roadmaps — strip shipped milestones in <details> blocks
+    const roadmap = fs.readFileSync(paths ? paths.roadmap : path.join(cwd, '.planning', 'ROADMAP.md'), 'utf-8');
+    // Strip <details>...</details> blocks so shipped milestones don't interfere
     const cleaned = roadmap.replace(/<details>[\s\S]*?<\/details>/gi, '');
     // Extract version and name from the same ## heading for consistency
     const headingMatch = cleaned.match(/## .*v(\d+\.\d+)[:\s]+([^\n(]+)/);
@@ -431,41 +498,6 @@ function getMilestoneInfo(cwd) {
   } catch {
     return { version: 'v1.0', name: 'milestone' };
   }
-}
-
-/**
- * Returns a filter function that checks whether a phase directory belongs
- * to the current milestone based on ROADMAP.md phase headings.
- * If no ROADMAP exists or no phases are listed, returns a pass-all filter.
- */
-function getMilestonePhaseFilter(cwd) {
-  const milestonePhaseNums = new Set();
-  try {
-    const roadmap = fs.readFileSync(path.join(cwd, '.planning', 'ROADMAP.md'), 'utf-8');
-    const phasePattern = /#{2,4}\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)\s*:/gi;
-    let m;
-    while ((m = phasePattern.exec(roadmap)) !== null) {
-      milestonePhaseNums.add(m[1]);
-    }
-  } catch {}
-
-  if (milestonePhaseNums.size === 0) {
-    const passAll = () => true;
-    passAll.phaseCount = 0;
-    return passAll;
-  }
-
-  const normalized = new Set(
-    [...milestonePhaseNums].map(n => (n.replace(/^0+/, '') || '0').toLowerCase())
-  );
-
-  function isDirInMilestone(dirName) {
-    const m = dirName.match(/^0*(\d+[A-Za-z]?(?:\.\d+)*)/);
-    if (!m) return false;
-    return normalized.has(m[1].toLowerCase());
-  }
-  isDirInMilestone.phaseCount = milestonePhaseNums.size;
-  return isDirInMilestone;
 }
 
 module.exports = {
@@ -487,6 +519,9 @@ module.exports = {
   pathExistsInternal,
   generateSlugInternal,
   getMilestoneInfo,
-  getMilestonePhaseFilter,
   toPosixPath,
+  resolvePlanningDir,
+  buildPaths,
+  getActiveWorkstream,
+  setActiveWorkstream,
 };

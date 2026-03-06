@@ -791,12 +791,20 @@ function cmdPhaseComplete(cwd, phaseNum, raw, paths) {
     }
   }
 
-  // Find next phase
+  // Find next phase (milestone-scoped: only consider phases listed in ROADMAP)
   let nextPhaseNum = null;
   let nextPhaseName = null;
   let isLastPhase = true;
 
   try {
+    // Extract phase numbers from ROADMAP to scope next-phase detection
+    let milestonePhaseNums = null;
+    if (fs.existsSync(roadmapPath)) {
+      const rmContent = fs.readFileSync(roadmapPath, 'utf-8');
+      const phaseMatches = rmContent.matchAll(/###?\s*Phase\s+(\d+[A-Z]?(?:\.\d+)*)/gi);
+      milestonePhaseNums = new Set([...phaseMatches].map(m => String(parseInt(m[1], 10))));
+    }
+
     const entries = fs.readdirSync(phasesDir, { withFileTypes: true });
     const dirs = entries.filter(e => e.isDirectory()).map(e => e.name).sort((a, b) => comparePhaseNum(a, b));
 
@@ -804,6 +812,8 @@ function cmdPhaseComplete(cwd, phaseNum, raw, paths) {
     for (const dir of dirs) {
       const dm = dir.match(/^(\d+[A-Z]?(?:\.\d+)*)-?(.*)/i);
       if (dm) {
+        // Skip phases not in the current milestone's roadmap (normalize to unpadded for comparison)
+        if (milestonePhaseNums && !milestonePhaseNums.has(String(parseInt(dm[1], 10)))) continue;
         if (comparePhaseNum(dm[1], phaseNum) > 0) {
           nextPhaseNum = dm[1];
           nextPhaseName = dm[2] || null;
