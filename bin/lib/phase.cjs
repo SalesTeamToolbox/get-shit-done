@@ -7,6 +7,7 @@ const path = require('path');
 const { escapeRegex, normalizePhaseName, comparePhaseNum, findPhaseInternal, getArchivedPhaseDirs, generateSlugInternal, output, error, buildPaths, toPosixPath } = require('./core.cjs');
 const { extractFrontmatter } = require('./frontmatter.cjs');
 const { writeStateMd } = require('./state.cjs');
+const { getOtherActiveWorkstreams } = require('./workstream.cjs');
 
 function cmdPhasesList(cwd, options, raw, paths) {
   const p = paths || buildPaths(cwd);
@@ -705,7 +706,7 @@ function cmdPhaseRemove(cwd, targetPhase, options, raw, paths) {
   output(result, raw);
 }
 
-function cmdPhaseComplete(cwd, phaseNum, raw, paths) {
+function cmdPhaseComplete(cwd, phaseNum, raw, paths, wsName) {
   if (!phaseNum) {
     error('phase number required for phase complete');
   }
@@ -869,6 +870,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw, paths) {
     writeStateMd(statePath, stateContent, cwd);
   }
 
+  // Detect other active workstreams when this workstream's last phase is done
+  let otherWorkstreams = [];
+  if (isLastPhase && wsName) {
+    otherWorkstreams = getOtherActiveWorkstreams(cwd, wsName);
+  }
+
   const result = {
     completed_phase: phaseNum,
     phase_name: phaseInfo.phase_name,
@@ -880,6 +887,12 @@ function cmdPhaseComplete(cwd, phaseNum, raw, paths) {
     roadmap_updated: fs.existsSync(roadmapPath),
     state_updated: fs.existsSync(statePath),
   };
+
+  // When other workstreams are still active, signal the collision
+  if (otherWorkstreams.length > 0) {
+    result.other_workstreams_active = true;
+    result.other_workstreams = otherWorkstreams;
+  }
 
   output(result, raw);
 }

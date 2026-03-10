@@ -1009,3 +1009,152 @@ describe('workstream migration', () => {
     assert.strictEqual(output.migration, null, 'no migration when no existing scoped files');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Workstream Collision Detection
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('workstream collision detection', () => {
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'gsd-test-'));
+    fs.mkdirSync(path.join(tmpDir, '.planning'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'PROJECT.md'),
+      '# Project\n\nTest project.\n'
+    );
+  });
+
+  afterEach(() => {
+    cleanup(tmpDir);
+  });
+
+  function createWorkstreamWithPhases(name, phases, completedPhases = []) {
+    const wsDir = path.join(tmpDir, '.planning', 'workstreams', name);
+    const phasesDir = path.join(wsDir, 'phases');
+    fs.mkdirSync(phasesDir, { recursive: true });
+
+    // Create STATE.md
+    const status = completedPhases.length === phases.length ? 'Milestone complete' : 'In progress';
+    const currentPhase = phases[phases.length - 1];
+    fs.writeFileSync(path.join(wsDir, 'STATE.md'), [
+      '# Project State',
+      '',
+      '## Current Position',
+      `**Status:** ${status}`,
+      `**Current Phase:** ${currentPhase}`,
+      `**Last Activity:** 2026-03-09`,
+      '**Last Activity Description:** Test',
+    ].join('\n'));
+
+    // Create ROADMAP.md with phase entries
+    const roadmapLines = ['# Roadmap', ''];
+    for (const p of phases) {
+      const padded = String(p).padStart(2, '0');
+      const completed = completedPhases.includes(p);
+      roadmapLines.push(`- [${completed ? 'x' : ' '}] Phase ${p}: Test phase ${p}`);
+      roadmapLines.push(`### Phase ${p}`);
+      roadmapLines.push(`**Goal:** Do thing ${p}`);
+      roadmapLines.push('');
+
+      // Create phase directory with plan (and summary if complete)
+      const phaseDir = path.join(phasesDir, `${padded}-test-phase-${p}`);
+      fs.mkdirSync(phaseDir, { recursive: true });
+      fs.writeFileSync(path.join(phaseDir, `${padded}-01-PLAN.md`), '# Plan');
+      if (completed) {
+        fs.writeFileSync(path.join(phaseDir, `${padded}-01-SUMMARY.md`), '# Summary');
+      }
+    }
+
+    fs.writeFileSync(path.join(wsDir, 'ROADMAP.md'), roadmapLines.join('\n'));
+    return wsDir;
+  }
+
+  test('phase complete includes other_workstreams when last phase and others active', () => {
+    // WS-A: phases 1-3, all complete (completing phase 3 now)
+    createWorkstreamWithPhases('ws-a', [1, 2, 3], [1, 2]);
+    // WS-B: phases 4-6, still in progress
+    createWorkstreamWithPhases('ws-b', [4, 5, 6], [4]);
+
+    // Set active workstream
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'active-workstream'),
+      'ws-a'
+    );
+
+    // Complete phase 3 on ws-a
+    const result = runGsdTools('phase complete 3 --ws ws-a --raw', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true, 'should be last phase in ws-a');
+    assert.strictEqual(output.other_workstreams_active, true, 'should detect ws-b is active');
+    assert.ok(Array.isArray(output.other_workstreams), 'should include other_workstreams array');
+    assert.strictEqual(output.other_workstreams.length, 1);
+    assert.strictEqual(output.other_workstreams[0].name, 'ws-b');
+  });
+
+  test('phase complete omits other_workstreams when no other workstreams exist', () => {
+    // Only WS-A exists
+    createWorkstreamWithPhases('ws-a', [1, 2, 3], [1, 2]);
+
+    const result = runGsdTools('phase complete 3 --ws ws-a --raw', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true);
+    assert.strictEqual(output.other_workstreams_active, undefined,
+      'should not have other_workstreams_active when no others exist');
+  });
+
+  test('phase complete omits collision info when not last phase', () => {
+    createWorkstreamWithPhases('ws-a', [1, 2, 3], []);
+    createWorkstreamWithPhases('ws-b', [4, 5, 6], [4]);
+
+    // Complete phase 1 on ws-a (not the last phase)
+    const result = runGsdTools('phase complete 1 --ws ws-a --raw', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, false);
+    assert.strictEqual(output.other_workstreams_active, undefined,
+      'should not check other workstreams when not last phase');
+  });
+
+  test('phase complete excludes completed workstreams from collision list', () => {
+    createWorkstreamWithPhases('ws-a', [1, 2, 3], [1, 2]);
+    // WS-B is fully complete (milestone complete status)
+    createWorkstreamWithPhases('ws-b', [4, 5, 6], [4, 5, 6]);
+
+    const result = runGsdTools('phase complete 3 --ws ws-a --raw', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.is_last_phase, true);
+    assert.strictEqual(output.other_workstreams_active, undefined,
+      'should not flag completed workstreams as active');
+  });
+
+  test('phase complete in flat mode has no collision detection', () => {
+    // No workstreams directory — flat mode
+    const phasesDir = path.join(tmpDir, '.planning', 'phases');
+    fs.mkdirSync(path.join(phasesDir, '01-test'), { recursive: true });
+    fs.writeFileSync(path.join(phasesDir, '01-test', '01-01-PLAN.md'), '# Plan');
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'ROADMAP.md'),
+      '# Roadmap\n\n### Phase 1\n**Goal:** Test\n'
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, '.planning', 'STATE.md'),
+      '# State\n\n**Status:** In progress\n**Current Phase:** 1\n'
+    );
+
+    const result = runGsdTools('phase complete 1 --raw', tmpDir);
+    assert.ok(result.success, `phase complete failed: ${result.error}`);
+
+    const output = JSON.parse(result.output);
+    assert.strictEqual(output.other_workstreams_active, undefined,
+      'flat mode should not have collision detection');
+  });
+});

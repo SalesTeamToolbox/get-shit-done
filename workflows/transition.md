@@ -365,7 +365,8 @@ Resume file: None
 
 The `is_last_phase` field from the phase complete result tells you directly:
 - `is_last_phase: false` → More phases remain → Go to **Route A**
-- `is_last_phase: true` → Milestone complete → Go to **Route B**
+- `is_last_phase: true` AND `other_workstreams_active: true` → Workstream done, but others still running → Go to **Route B1**
+- `is_last_phase: true` AND no `other_workstreams_active` → Milestone complete → Go to **Route B2**
 
 The `next_phase` and `next_phase_name` fields give you the next phase details.
 
@@ -473,7 +474,74 @@ Exit skill and invoke SlashCommand("/gsd:discuss-phase [X+1] --auto ${GSD_WS}")
 
 ---
 
-**Route B: Milestone complete (all phases done)**
+**Route B1: Workstream done, other workstreams still active**
+
+This workstream has finished all its phases, but other workstreams are still in progress on the same codebase.
+
+**DO NOT offer `/gsd:complete-milestone`** — the milestone is not fully done yet.
+
+**Clear auto-advance** — workstream boundary is the natural stopping point:
+```bash
+node "$HOME/.claude/get-shit-done/bin/gsd-tools.cjs" config-set workflow.auto_advance false ${GSD_WS}
+```
+
+Extract the `other_workstreams` array from the phase complete result to show what's still running.
+
+<if mode="yolo">
+
+```
+Phase {X} marked complete.
+
+✓ Workstream "{WS_NAME}" is done — all {N} phases finished!
+
+⚠️ Other workstreams still active:
+{for each other_workstream: "  - {name}: {status} (phase {current_phase}, {phases} phases)"}
+
+⚡ Auto-completing this workstream and archiving it.
+```
+
+Exit skill and invoke SlashCommand("/gsd:workstream complete {WS_NAME}")
+
+</if>
+
+<if mode="interactive" OR="custom with gates.confirm_transition true">
+
+```
+## ✓ Phase {X}: {Phase Name} Complete
+
+✓ Workstream "{WS_NAME}" is done — all {N} phases finished!
+
+---
+
+⚠️ **Other workstreams still active on this codebase:**
+{for each other_workstream: "- **{name}**: {status} — phase {current_phase} ({phases} phases)"}
+
+The milestone is NOT complete yet. Do not archive it.
+
+---
+
+## ▶ Next Up
+
+**Archive this workstream** — mark it done without touching the milestone
+
+`/gsd:workstream complete {WS_NAME}`
+
+<sub>`/clear` first → fresh context window</sub>
+
+---
+
+**Also available:**
+- Review accomplishments before archiving
+- `/gsd:progress ${GSD_WS}` — check overall project status
+
+---
+```
+
+</if>
+
+---
+
+**Route B2: Milestone complete (all phases done, no other workstreams)**
 
 **Clear auto-advance** — milestone boundary is the natural stopping point:
 ```bash

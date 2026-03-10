@@ -472,7 +472,7 @@ async function main() {
         const forceFlag = args.includes('--force');
         phase.cmdPhaseRemove(cwd, args[2], { force: forceFlag }, raw, paths);
       } else if (subcommand === 'complete') {
-        phase.cmdPhaseComplete(cwd, args[2], raw, paths);
+        phase.cmdPhaseComplete(cwd, args[2], raw, paths, ws);
       } else {
         error('Unknown phase subcommand. Available: next-decimal, add, insert, remove, complete');
       }

@@ -528,6 +528,75 @@ function cmdWorkstreamProgress(cwd, raw) {
   }, raw);
 }
 
+// ─── Collision Detection ────────────────────────────────────────────────────
+
+/**
+ * Return other workstreams that are NOT complete.
+ * Used by phase.cjs to detect whether the milestone has active parallel work
+ * when a workstream finishes its last phase.
+ *
+ * Returns [] in flat mode or when no other workstreams exist.
+ */
+function getOtherActiveWorkstreams(cwd, excludeWs) {
+  const wsRoot = path.join(cwd, '.planning', 'workstreams');
+  if (!fs.existsSync(wsRoot)) return [];
+
+  const entries = fs.readdirSync(wsRoot, { withFileTypes: true });
+  const others = [];
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (entry.name === excludeWs) continue;
+
+    const wsDir = path.join(wsRoot, entry.name);
+    const statePath = path.join(wsDir, 'STATE.md');
+
+    // Read status — skip workstreams already marked complete
+    let status = 'unknown';
+    let currentPhase = null;
+    try {
+      const content = fs.readFileSync(statePath, 'utf-8');
+      const statusMatch = content.match(/\*\*Status:\*\*\s*(.+)/);
+      if (statusMatch) status = statusMatch[1].trim();
+      const phaseMatch = content.match(/\*\*Current Phase:\*\*\s*(.+)/);
+      if (phaseMatch) currentPhase = phaseMatch[1].trim();
+    } catch {}
+
+    if (status.toLowerCase().includes('milestone complete') ||
+        status.toLowerCase().includes('archived')) {
+      continue;
+    }
+
+    // Count progress
+    let phaseCount = 0;
+    let completedCount = 0;
+    try {
+      const phasesDir = path.join(wsDir, 'phases');
+      const phaseEntries = fs.readdirSync(phasesDir, { withFileTypes: true });
+      const dirs = phaseEntries.filter(e => e.isDirectory());
+      phaseCount = dirs.length;
+
+      for (const d of dirs) {
+        const files = fs.readdirSync(path.join(phasesDir, d.name));
+        const plans = files.filter(f => f.endsWith('-PLAN.md') || f === 'PLAN.md');
+        const summaries = files.filter(f => f.endsWith('-SUMMARY.md') || f === 'SUMMARY.md');
+        if (plans.length > 0 && summaries.length >= plans.length) {
+          completedCount++;
+        }
+      }
+    } catch {}
+
+    others.push({
+      name: entry.name,
+      status,
+      current_phase: currentPhase,
+      phases: `${completedCount}/${phaseCount}`,
+    });
+  }
+
+  return others;
+}
+
 module.exports = {
   migrateToWorkstreams,
   cmdWorkstreamCreate,
@@ -537,4 +606,5 @@ module.exports = {
   cmdWorkstreamSet,
   cmdWorkstreamGet,
   cmdWorkstreamProgress,
+  getOtherActiveWorkstreams,
 };

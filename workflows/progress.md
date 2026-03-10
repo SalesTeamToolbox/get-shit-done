@@ -318,6 +318,46 @@ Read ROADMAP.md to get the next phase's name and goal.
 
 **Route D: Milestone complete**
 
+**First, check for other active workstreams:**
+
+```bash
+WS_PROGRESS=$(node "$HOME/.claude/get-shit-done/bin/gsd-tools.cjs" workstream progress --raw 2>/dev/null)
+```
+
+Parse `WS_PROGRESS`. If `mode` is `"workstream"` and there are workstreams OTHER than the current one (`${WS_NAME}`) that are NOT at 100% progress, show **Route D1** (workstream done, not milestone). Otherwise show **Route D2** (full milestone complete).
+
+**Route D1: Workstream done, other workstreams still active**
+
+```
+---
+
+## ✓ Workstream "{WS_NAME}" Complete
+
+All {N} phases in this workstream finished!
+
+⚠️ **Other workstreams still active:**
+{for each active other workstream: "- **{name}**: {status} — {phases} phases"}
+
+The milestone is NOT complete yet — do not archive it.
+
+## ▶ Next Up
+
+**Archive this workstream** — mark it done without touching the milestone
+
+`/gsd:workstream complete {WS_NAME}`
+
+<sub>`/clear` first → fresh context window</sub>
+
+---
+
+**Also available:**
+- `/gsd:verify-work ${GSD_WS}` — user acceptance test before archiving workstream
+
+---
+```
+
+**Route D2: Full milestone complete (no other active workstreams)**
+
 ```
 ---
 

@@ -442,7 +442,7 @@ ls -1 ${phase_dir}/*-SUMMARY.md 2>/dev/null | wc -l
 |-----------|-------|--------|
 | summaries < plans | **A: More plans** | Find next PLAN without SUMMARY. Yolo: auto-continue. Interactive: show next plan, suggest `/gsd:execute-phase {phase}` + `/gsd:verify-work`. STOP here. |
 | summaries = plans, current < highest phase | **B: Phase done** | Show completion, suggest `/gsd:plan-phase {Z+1}` + `/gsd:verify-work {Z}` + `/gsd:discuss-phase {Z+1}` |
-| summaries = plans, current = highest phase | **C: Milestone done** | Show banner, suggest `/gsd:complete-milestone` + `/gsd:verify-work` + `/gsd:add-phase` |
+| summaries = plans, current = highest phase | **C: Milestone done** | Check for other active workstreams first. If other workstreams active: show workstream-complete banner, suggest `/gsd:workstream complete {WS_NAME}`. If no other workstreams: show milestone-complete banner, suggest `/gsd:complete-milestone` + `/gsd:verify-work` + `/gsd:add-phase` |
 
 All routes: `/clear` first for fresh context.
 </step>
